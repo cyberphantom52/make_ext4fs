@@ -7,35 +7,46 @@ else
   ZLIB := -lz
 endif
 
-OBJ := \
-    allocate.o \
-	canned_fs_config.o \
-    contents.o \
-    crc16.o \
-    ext4fixup.o \
-    ext4_sb.o \
-    ext4_utils.o \
-    extent.o \
-    indirect.o \
-	make_ext4fs_main.o \
-    make_ext4fs.o \
-    sha1.o \
-    uuid.o \
-    wipe.o
+BUILD_DIR := _build
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $^
+# Create build directory structure
+$(shell mkdir -p $(BUILD_DIR))
 
-make_ext4fs: $(OBJ) libsparse/libsparse.a $(OBJ) libselinux/src/libselinux.a
+SOURCES := \
+    allocate.c \
+    canned_fs_config.c \
+    contents.c \
+    crc16.c \
+    ext4fixup.c \
+    ext4_sb.c \
+    ext4_utils.c \
+    extent.c \
+    indirect.c \
+    make_ext4fs_main.c \
+    make_ext4fs.c \
+    sha1.c \
+    uuid.c \
+    wipe.c
+
+OBJ := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
+
+all: $(BUILD_DIR)/make_ext4fs
+
+$(BUILD_DIR)/%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/make_ext4fs: $(OBJ) $(BUILD_DIR)/libsparse.a $(BUILD_DIR)/libselinux.a
 	$(CC) $(LDFLAGS) -o $@ $^ $(ZLIB)
 
-libsparse/libsparse.a:
-	$(MAKE) -C libsparse/ libsparse.a
+$(BUILD_DIR)/libsparse.a:
+	$(MAKE) -C libsparse/ BUILD_DIR=../_build libsparse.a
 
-libselinux/src/libselinux.a:
-	$(MAKE) -C libselinux/src/ libselinux.a
+$(BUILD_DIR)/libselinux.a:
+	$(MAKE) -C libselinux/src/ BUILD_DIR=../../_build libselinux.a
 
 clean:
 	$(MAKE) -C libsparse/ clean
 	$(MAKE) -C libselinux/src/ clean
-	rm -f $(OBJ) make_ext4fs
+	rm -rf $(BUILD_DIR)
+
+.PHONY: all clean
