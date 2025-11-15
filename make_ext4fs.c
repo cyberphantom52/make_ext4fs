@@ -33,6 +33,11 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#include <selinux/selinux.h>
+#include <selinux/label.h>
+#include <selinux/android.h>
+
 #include <locale.h>
 
 /* TODO: Not implemented:
@@ -45,7 +50,8 @@ static int filter_dot(const struct dirent *d)
 	return (strcmp(d->d_name, "..") && strcmp(d->d_name, "."));
 }
 
-static u32 build_default_directory_structure(time_t fixed_time)
+static u32 build_default_directory_structure(const char *dir_path,
+					     struct selabel_handle *sehnd, time_t fixed_time)
 {
 	u32 inode;
 	u32 root_inode;
@@ -63,6 +69,20 @@ static u32 build_default_directory_structure(time_t fixed_time)
 	inode_set_permissions(inode, dentries.mode,
 	        dentries.uid, dentries.gid, dentries.mtime);
 
+	if (sehnd) {
+		char *path = NULL;
+		char *secontext = NULL;
+
+		asprintf(&path, "%slost+found", dir_path);
+		if (selabel_lookup(sehnd, &secontext, path, S_IFDIR) < 0) {
+			error("cannot lookup security context for %s", path);
+		} else {
+			inode_set_selinux(inode, secontext);
+			freecon(secontext);
+		}
+		free(path);
+	}
+
 	return root_inode;
 }
 
@@ -75,7 +95,7 @@ static u32 build_default_directory_structure(time_t fixed_time)
    if the image were mounted at the specified mount point */
 static u32 build_directory_structure(const char *full_path, const char *dir_path,
 		u32 dir_inode, fs_config_func_t fs_config_func,
-		int verbose, time_t fixed_time)
+		struct selabel_handle *sehnd, int verbose, time_t fixed_time)
 {
 	int entries = 0;
 	struct dentry *dentries;
@@ -160,6 +180,14 @@ static u32 build_directory_structure(const char *full_path, const char *dir_path
 				dentries[i].capabilities = capabilities;
 			}
 		}
+		if (sehnd) {
+			if (selabel_lookup(sehnd, &dentries[i].secon, dentries[i].path, stat.st_mode) < 0) {
+				error("cannot lookup security context for %s", dentries[i].path);
+			}
+
+			if (dentries[i].secon && verbose)
+				printf("Labeling %s as %s\n", dentries[i].path, dentries[i].secon);
+		}
 
 		if (S_ISREG(stat.st_mode)) {
 			dentries[i].file_type = EXT4_FT_REG_FILE;
@@ -201,6 +229,18 @@ static u32 build_directory_structure(const char *full_path, const char *dir_path
 		dentries[0].file_type = EXT4_FT_DIR;
 		dentries[0].uid = 0;
 		dentries[0].gid = 0;
+		if (sehnd) {
+			char *path = NULL;
+			char *secontext = NULL;
+
+			asprintf(&path, "%slost+found", dir_path);
+			if (selabel_lookup(sehnd, &secontext, path, S_IFDIR) < 0) {
+				error("cannot lookup security context for %s", path);
+			} else {
+				dentries[0].secon = secontext;
+			}
+			free(path);
+		}
 		entries++;
 		dirs++;
 	}
@@ -222,7 +262,7 @@ static u32 build_directory_structure(const char *full_path, const char *dir_path
 			if (ret < 0)
 				critical_error_errno("asprintf");
 			entry_inode = build_directory_structure(subdir_full_path,
-					subdir_dir_path, inode, fs_config_func, verbose, fixed_time);
+					subdir_dir_path, inode, fs_config_func, sehnd, verbose, fixed_time);
 			free(subdir_full_path);
 			free(subdir_dir_path);
 		} else if (dentries[i].file_type == EXT4_FT_SYMLINK) {
@@ -244,6 +284,16 @@ static u32 build_directory_structure(const char *full_path, const char *dir_path
 		if (ret)
 			error("failed to set permissions on %s\n", dentries[i].path);
 
+		/*
+		 * It's important to call inode_set_selinux() before
+		 * inode_set_capabilities(). Extended attributes need to
+		 * be stored sorted order, and we guarantee this by making
+		 * the calls in the proper order.
+		 * Please see xattr_assert_sane() in contents.c
+		 */
+		ret = inode_set_selinux(entry_inode, dentries[i].secon);
+		if (ret)
+			error("failed to set SELinux context on %s\n", dentries[i].path);
 		ret = inode_set_capabilities(entry_inode, dentries[i].capabilities);
 		if (ret)
 			error("failed to set capability on %s\n", dentries[i].path);
@@ -252,6 +302,7 @@ static u32 build_directory_structure(const char *full_path, const char *dir_path
 		free(dentries[i].full_path);
 		free(dentries[i].link);
 		free((void *)dentries[i].filename);
+		free(dentries[i].secon);
 	}
 
 	free(dentries);
@@ -376,20 +427,27 @@ static char *canonicalize_rel_slashes(const char *str)
 }
 
 int make_ext4fs_internal(int fd, const char *_directory,
-						 fs_config_func_t fs_config_func, int gzip,
+						 const char *_mountpoint, fs_config_func_t fs_config_func, int gzip,
 						 int sparse, int crc, int wipe,
-						 int verbose, time_t fixed_time,
+						 struct selabel_handle *sehnd, int verbose, time_t fixed_time,
 						 FILE* block_list_file)
 {
 	u32 root_inode_num;
 	u16 root_mode;
 	char *directory = NULL;
+	char *mountpoint;
 
 	if (setjmp(setjmp_env))
-		return EXIT_FAILURE; /* Handle a call to longjmp() */
+		return EXIT_FAILURE;
 
-	if (_directory)
+	if (_mountpoint)
+		mountpoint = canonicalize_abs_slashes(_mountpoint);
+	else
+		mountpoint = strdup("");
+
+	if (_directory) {
 		directory = canonicalize_rel_slashes(_directory);
+	}
 
 	if (info.len <= 0)
 		info.len = get_file_size(fd);
@@ -475,14 +533,29 @@ int make_ext4fs_internal(int fd, const char *_directory,
 		ext4_create_resize_inode();
 
 	if (directory)
-		root_inode_num = build_directory_structure(directory, "", 0,
-			fs_config_func, verbose, fixed_time);
+		root_inode_num = build_directory_structure(directory, mountpoint, 0,
+			fs_config_func, sehnd, verbose, fixed_time);
 	else
-		root_inode_num = build_default_directory_structure(fixed_time);
+		root_inode_num = build_default_directory_structure(mountpoint, sehnd, fixed_time);
 
 	root_mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
 	inode_set_permissions(root_inode_num, root_mode, 0, 0,
-		(fixed_time != 1) ? fixed_time : 0);
+		(fixed_time != -1) ? fixed_time : 0);
+
+	if (sehnd) {
+		char *secontext = NULL;
+
+		if (selabel_lookup(sehnd, &secontext, mountpoint, S_IFDIR) < 0) {
+			error("cannot lookup security context for %s", mountpoint);
+		}
+		if (secontext) {
+			if (verbose) {
+				printf("Labeling %s as %s\n", mountpoint, secontext);
+			}
+			inode_set_selinux(root_inode_num, secontext);
+		}
+		freecon(secontext);
+	}
 
 	ext4_update_free();
 
@@ -520,6 +593,7 @@ int make_ext4fs_internal(int fd, const char *_directory,
 	ext4_sparse_file = NULL;
 
 	free(directory);
+	free(mountpoint);
 
 	return 0;
 }

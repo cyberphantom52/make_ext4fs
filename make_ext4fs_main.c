@@ -25,11 +25,14 @@
 #include <sys/disk.h>
 #endif
 
+#include <selinux/selinux.h>
+#include <selinux/label.h>
+#include <selinux/android.h>
+
 #include "ext4_utils.h"
 #include "canned_fs_config.h"
 
 extern struct fs_info info;
-
 
 static void usage(char *path)
 {
@@ -46,6 +49,7 @@ int main(int argc, char **argv)
 	int opt;
 	const char *filename = NULL;
 	const char *directory = NULL;
+	const char *mountpoint = NULL;
 	fs_config_func_t fs_config_func = NULL;
 	const char *fs_config_file = NULL;
 	int gzip = 0;
@@ -56,9 +60,11 @@ int main(int argc, char **argv)
 	int exitcode;
 	int verbose = 0;
 	time_t fixed_time = -1;
+	struct selabel_handle *sehnd = NULL;
 	FILE* block_list_file = NULL;
+	struct selinux_opt seopts[] = { { SELABEL_OPT_PATH, "" } };
 
-	while ((opt = getopt(argc, argv, "l:j:b:g:i:I:L:T:C:B:m:fwzJsctv")) != -1) {
+	while ((opt = getopt(argc, argv, "l:j:b:g:i:I:L:a:S:T:C:B:m:fwzJsctv")) != -1) {
 		switch (opt) {
 		case 'l':
 			info.len = parse_num(optarg);
@@ -81,6 +87,9 @@ int main(int argc, char **argv)
 		case 'L':
 			info.label = optarg;
 			break;
+		case 'a':
+			mountpoint = optarg;
+			break;
 		case 'f':
 			force = 1;
 			break;
@@ -101,6 +110,14 @@ int main(int argc, char **argv)
 			break;
 		case 't':
 			fprintf(stderr, "Warning: -t (initialize inode tables) is deprecated\n");
+			break;
+		case 'S':
+			seopts[0].value = optarg;
+			sehnd = selabel_open(SELABEL_CTX_FILE, seopts, 1);
+			if (!sehnd) {
+				perror(optarg);
+				exit(EXIT_FAILURE);
+			}
 			break;
 		case 'v':
 			verbose = 1;
@@ -158,6 +175,9 @@ int main(int argc, char **argv)
 	if (optind < argc)
 		directory = argv[optind++];
 
+	if (optind < argc)
+		mountpoint = argv[optind++];
+
 	if (optind < argc) {
 		fprintf(stderr, "Unexpected argument: %s\n", argv[optind]);
 		usage(argv[0]);
@@ -174,8 +194,8 @@ int main(int argc, char **argv)
 		fd = STDOUT_FILENO;
 	}
 
-	exitcode = make_ext4fs_internal(fd, directory, fs_config_func, gzip,
-		sparse, crc, wipe, verbose, fixed_time, block_list_file);
+	exitcode = make_ext4fs_internal(fd, directory, mountpoint, fs_config_func, gzip,
+		sparse, crc, wipe, sehnd, verbose, fixed_time, block_list_file);
 	close(fd);
 	if (block_list_file)
 		fclose(block_list_file);

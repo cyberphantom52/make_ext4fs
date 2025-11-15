@@ -488,6 +488,15 @@ static int xattr_add(u32 inode_num, int name_index, const char *name,
 	return result;
 }
 
+int inode_set_selinux(u32 inode_num, const char *secon)
+{
+	if (!secon)
+		return 0;
+
+	return xattr_add(inode_num, EXT4_XATTR_INDEX_SECURITY,
+		XATTR_SELINUX_SUFFIX, secon, strlen(secon) + 1);
+}
+
 int inode_set_capabilities(u32 inode_num, uint64_t capabilities) {
 	if (capabilities == 0)
 		return 0;
