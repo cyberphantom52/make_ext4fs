@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS += -Iinclude -Ilibsparse/include
+CFLAGS += -Iinclude -Ilibsparse/include -Ilibselinux/include
 
 ifeq ($(STATIC),1)
   ZLIB := -Wl,-Bstatic -lz -Wl,-Bdynamic
@@ -26,12 +26,16 @@ OBJ := \
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-make_ext4fs: $(OBJ) libsparse/libsparse.a
+make_ext4fs: $(OBJ) libsparse/libsparse.a $(OBJ) libselinux/src/libselinux.a
 	$(CC) $(LDFLAGS) -o $@ $^ $(ZLIB)
 
 libsparse/libsparse.a:
 	$(MAKE) -C libsparse/ libsparse.a
 
+libselinux/src/libselinux.a:
+	$(MAKE) -C libselinux/src/ libselinux.a
+
 clean:
 	$(MAKE) -C libsparse/ clean
+	$(MAKE) -C libselinux/src/ clean
 	rm -f $(OBJ) make_ext4fs
